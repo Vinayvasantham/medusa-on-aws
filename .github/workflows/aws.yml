@@ -28,12 +28,12 @@ jobs:
       # Step 4: Build the Docker image
       - name: Build Docker image
         run: |
-          docker build -t hemanth42079/medusa-store:latest .
+          docker build -t shunnualisha8980/medusa-store:latest .
 
       # Step 5: Push Docker image to Docker Hub
       - name: Push Docker image to Docker Hub
         run: |
-          docker push hemanth42079/medusa-store:latest
+          docker push shunnualisha8980/medusa-store:latest
 
       # Step 6: Configure AWS credentials
       - name: Configure AWS credentials
@@ -59,7 +59,7 @@ jobs:
 
           NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
             '.taskDefinition |
-            .containerDefinitions[0].image = "hemanth42079/medusa-store:latest" |
+            .containerDefinitions[0].image = "shunnualisha8980/medusa-store:latest" |
             del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
 
           NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \

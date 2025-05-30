@@ -46,8 +46,8 @@ jobs:
       # Step 7: Pull Docker image (for ECS)
       - name: Pull Docker image from Docker Hub
         run: |
-          docker pull hemanth42079/medusa-store:latest
-          echo "Pulled image: hemanth42079/medusa-store:latest"
+          docker pull shunnualisha8980/medusa-store:latest
+          echo "Pulled image: shunnualisha8980/medusa-store:latest"
 
       # Step 8: Update ECS task definition
       - name: Update ECS task definition

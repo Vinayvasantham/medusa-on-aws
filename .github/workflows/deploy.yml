@@ -69,24 +69,6 @@ jobs:
 
           echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
 
-      - name: Run DB Migrations on ECS
-        run: |
-          aws ecs run-task \
-            --cluster $ECS_CLUSTER \
-            --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[subnet-0411fc8f2e2f8523b,subnet-0921b8e9af81137cd],securityGroups=[sg-0e64a4a0da97f441e],assignPublicIp=ENABLED}" \
-            --task-definition ${{ steps.update-task-def.outputs.task_definition_arn }} \
-            --overrides '{
-              "containerOverrides": [
-                {
-                  "name": "medusa",
-                  "command": ["npx", "medusa", "db:migrate"]
-                }
-              ]
-            }' \
-            --region $AWS_REGION
-
-
       - name: Deploy new ECS task
         run: |
           aws ecs update-service \
@@ -104,6 +86,19 @@ jobs:
             --region $AWS_REGION
           echo "ECS service is now stable ✅"
 
-
-
+      - name: Run Medusa DB Migrations on ECS
+        run: |
+          echo "Running DB migrations on ECS..."
+          aws ecs run-task \
+            --cluster $ECS_CLUSTER \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-0411fc8f2e2f8523b,subnet-0921b8e9af81137cd],securityGroups=[sg-0e64a4a0da97f441e],assignPublicIp=ENABLED}" \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --region $AWS_REGION \
+            --overrides "$(jq -n \
+              --arg container "$CONTAINER_NAME" \
+              --arg cmd1 "npx" \
+              --arg cmd2 "medusa" \
+              --arg cmd3 "db:migrate" \
+              '{containerOverrides:[{name:$container,command:[$cmd1,$cmd2,$cmd3]}]}')"
 

@@ -4,5 +4,5 @@ COPY package.json package-lock.json ./
 RUN npm install
 COPY . .
 EXPOSE 9000
-RUN npx medusa migrations run
-CMD ["npm", "run", "dev"]
+CMD ["sh", "-c", "npx medusa migrations run && npm run dev"]
+# CMD ["npm", "run", "dev"]

@@ -1,0 +1,87 @@
+name: Deploy Medusa Store to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT_ID: 331190361204
+  ECR_REPOSITORY: medusa-repo
+  ECR_IMAGE_URI: 331190361204.dkr.ecr.ap-south-1.amazonaws.com/medusa-repo:latest
+  ECS_CLUSTER: medusa-cluster
+  ECS_SERVICE: medusa-service
+  TASK_DEFINITION_FAMILY: medusa-task
+  CONTAINER_NAME: medusa
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+      - name: Build Docker image
+        run: |
+          docker build -t $ECR_REPOSITORY .
+
+      - name: Tag and Push image to ECR
+        run: |
+          docker tag $ECR_REPOSITORY:latest $ECR_IMAGE_URI
+          docker push $ECR_IMAGE_URI
+          echo "IMAGE_URI=$ECR_IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Update ECS task definition
+        id: update-task-def
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --region $AWS_REGION)
+
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE_URI "$ECR_IMAGE_URI" \
+            --arg CONTAINER_NAME "$CONTAINER_NAME" \
+            '.taskDefinition |
+            .containerDefinitions |= map(if .name == $CONTAINER_NAME then .image = $IMAGE_URI else . end) |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --region $AWS_REGION \
+            --cli-input-json "$NEW_TASK_DEF" \
+            | jq -r '.taskDefinition.taskDefinitionArn')
+
+          echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Deploy new ECS task
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition ${{ steps.update-task-def.outputs.task_definition_arn }} \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Wait for ECS to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+          echo "ECS service is now stable ✅"

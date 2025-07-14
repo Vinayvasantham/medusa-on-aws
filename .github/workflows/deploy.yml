@@ -85,3 +85,13 @@ jobs:
             --services $ECS_SERVICE \
             --region $AWS_REGION
           echo "ECS service is now stable ✅"
+
+      - name: Run DB Migrations
+        run: |
+          aws ecs run-task \
+            --cluster $ECS_CLUSTER \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-0411fc8f2e2f8523b,subnet-0921b8e9af81137cd],securityGroups=[sg-0e64a4a0da97f441e],assignPublicIp=ENABLED}" \
+            --task-definition ${{ steps.update-task-def.outputs.task_definition_arn }} \
+            --overrides '{"containerOverrides":[{"name":"medusa","command":["npx","medusa","migrations","run"]}]}'
+

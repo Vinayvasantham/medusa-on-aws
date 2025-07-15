@@ -1,229 +1,189 @@
+# 🛍️ Medusa Headless E-Commerce Deployment on AWS ECS with Terraform & GitHub Actions
+
+This project sets up and deploys the Medusa backend to AWS using ECS Fargate, RDS (PostgreSQL). It also includes CI/CD using GitHub Actions, infrastructure provisioning with Terraform, and automatic DB migration.
 
 ---
 
-## 🚀 Deploying Medusa Backend on AWS ECS with Terraform, RDS & GitHub Actions
+## 📦 Project Structure
 
-### 👨‍💻 Overview
-
-This project demonstrates the complete Infrastructure-as-Code (IaC) setup and CI/CD pipeline to deploy the **[Medusa.js](https://docs.medusajs.com)** headless commerce backend on **AWS ECS using Fargate**, with **PostgreSQL via RDS Aurora**, **Docker image on Docker Hub**, and **CI/CD via GitHub Actions**.
-
----
-
-## 🔧 Prerequisites
-
-- AWS Account
-- GitHub Account
-- Docker Hub Account
-- Terraform Installed
-- Docker Installed
-- Git Installed
-
----
-
-## 🌐 Step 1: AWS Setup
-
-1. **Create IAM User**  
-   - Enable programmatic access  
-   - Attach policies:
-     - `AmazonEC2ContainerServiceFullAccess`
-     - `AmazonRDSFullAccess`
-     - `IAMFullAccess`
-     - `AmazonECS_FullAccess`
-
-2. **Note** your `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` — we'll use them in GitHub Actions.
-
----
-
-## 📦 Step 2: Terraform Infrastructure (IaC)
-
-**File: `main.tf`**
-```hcl
-provider "aws" {
-  region = "us-east-1"
-}
-
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-}
-
-resource "aws_subnet" "subnet1" {
-  vpc_id     = aws_vpc.main.id
-  cidr_block = "10.0.1.0/24"
-  availability_zone = "us-east-1a"
-}
-
-resource "aws_security_group" "ecs_sg" {
-  name        = "ecs_sg"
-  description = "Allow inbound"
-  vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_ecs_cluster" "medusa_cluster" {
-  name = "medusa-cluster"
-}
-
-# Add RDS PostgreSQL Aurora
-resource "aws_rds_cluster" "medusa_db" {
-  cluster_identifier = "medusa-db"
-  engine             = "aurora-postgresql"
-  master_username    = "admin"
-  master_password    = "yourpassword"
-  skip_final_snapshot = true
-  vpc_security_group_ids = [aws_security_group.ecs_sg.id]
-}
-
-output "db_endpoint" {
-  value = aws_rds_cluster.medusa_db.endpoint
-}
+```text
+.
+├── Dockerfile                  # Medusa backend container
+├── docker-compose.yml         # (Optional) local setup
+├── terraform/                 # Infra provisioning (RDS, VPC, ECS, etc.)
+│   ├── main.tf
+│   ├── variables.tf
+│   ├── outputs.tf
+│   └── ...
+├── .github/
+│   └── workflows/
+│       └── deploy.yml         # GitHub Actions pipeline
+├── src/
+│   └── admin/                 # Medusa Admin (must be built for prod)
+├── medusa-config.ts
+├── package.json
+├── package-lock.json
+└── README.md
 ```
 
 ---
 
-## 🐳 Step 3: Docker Setup
+## 🛠️ Prerequisites
 
-**File: `Dockerfile`**
+- AWS CLI configured
+- GitHub repository secrets set:
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
+  - `AWS_REGION`
+- Terraform installed locally (for initial setup)
+
+---
+
+## 🚀 Deployment Steps
+
+### ✅ 1. Provision Infrastructure (One-time)
+
+```bash
+cd terraform
+terraform init
+terraform apply
+```
+
+> Outputs like `rds_endpoint`, `ecs_cluster_name`, etc., will be stored for use in GitHub Actions.
+
+---
+
+### ✅ 2. Build Admin Panel for Production
+
+Medusa expects the admin panel to be built before running in production.
+
+```bash
+cd src/admin
+npm install
+npm run build
+```
+
+This will create a `dist/` folder that needs to be copied in the Docker image. You can move it or copy in Dockerfile.
+
+---
+
+### ✅ 3. Dockerfile
+
+Update your `Dockerfile`:
+
 ```Dockerfile
-FROM node:18-alpine
-
+FROM node:20-alpine
 WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm install
 
 COPY . .
 
-RUN npm install
+# Copy built admin panel if not already included
+COPY src/admin/dist ./src/admin/dist
 
-EXPOSE 9000
-
-CMD ["npm", "run", "start"]
-```
-
-**File: `.env`**
-```env
-DATABASE_URL=postgres://admin:yourpassword@<REPLACE_WITH_RDS_ENDPOINT>:5432/medusa
-```
-
-**File: `docker-compose.yml`**
-```yaml
-version: "3.9"
-services:
-  medusa:
-    build: .
-    ports:
-      - "9000:9000"
-    env_file:
-      - .env
+# Run DB migrations & create admin user before app starts
+CMD npx medusa migrations run && \
+    npx medusa user -e admin@medusa-test.com -p supersecret && \
+    npm run start
 ```
 
 ---
 
-## 🔁 Step 4: GitHub Actions CI/CD
+### ✅ 4. GitHub Actions Workflow (`.github/workflows/deploy.yml`)
 
-**File: `.github/workflows/deploy.yml`**
 ```yaml
 name: Deploy to ECS
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 jobs:
   deploy:
+    name: Build and Deploy
     runs-on: ubuntu-latest
 
+    env:
+      AWS_REGION: ap-south-1
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v2
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
 
-    - name: Build and Push Docker Image
-      run: |
-        docker build -t ${{ secrets.DOCKER_USERNAME }}/medusa-backend .
-        docker push ${{ secrets.DOCKER_USERNAME }}/medusa-backend
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve
 
-    - name: Deploy to ECS (Optional Step - if using ECS CLI or custom script)
-      run: echo "Deploying image to ECS using AWS CLI or Terraform"
+      - name: Get Terraform Outputs
+        id: tf
+        working-directory: terraform
+        run: |
+          echo "RDS_HOST=$(terraform output -raw rds_endpoint)" >> $GITHUB_ENV
+          echo "ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_ENV
+          echo "ECS_SERVICE=$(terraform output -raw ecs_service_name)" >> $GITHUB_ENV
+          echo "TASK_DEF=$(terraform output -raw task_definition_family)" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: |
+          docker build -t medusa-app .
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin <your-ecr-url>
+
+      - name: Push Docker image to ECR
+        run: |
+          docker tag medusa-app:latest <your-ecr-url>/medusa-app:latest
+          docker push <your-ecr-url>/medusa-app:latest
+
+      - name: Update ECS Service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment
 ```
 
 ---
 
-## 🔐 Step 5: Add Secrets to GitHub
+## ✅ Post-Deployment: Testing
 
-Go to your GitHub Repo → `Settings > Secrets and variables > Actions` and add:
+### 🧪 Test Medusa Admin Token Auth
 
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `DOCKER_USERNAME`
-- `DOCKER_PASSWORD`
-
----
-
-## 🚀 Step 6: Run It All
-
-1. Initialize Terraform:
 ```bash
-terraform init
-terraform apply
+curl -X POST http://<public-ip>:9000/admin/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@medusa-test.com", "password": "supersecret"}'
 ```
 
-2. Get the RDS Endpoint from output and update `.env`
-
-3. Build and Push Docker image:
-```bash
-docker build -t yourdockeruser/medusa-backend .
-docker push yourdockeruser/medusa-backend
-```
-
-4. Push code to GitHub `main` branch → GitHub Actions takes over and deploys.
+Then use the token in headers for protected routes.
 
 ---
 
-## ✅ Final Result
+## ❓ Common Issues
 
-- ECS Service running Medusa backend
-- PostgreSQL RDS Aurora connected
-- CI/CD with GitHub Actions
-- Docker image hosted on Docker Hub
-- Live, scalable, serverless deployment 🎉
-
----
-
-## 🎥 Video
-
-> 🔗 **[Insert YouTube Video Link Here]**  
-> In this video, I walk through everything — including my face and live output. Check it out!
+- ❌ **`index.html not found`**: You didn't build the admin panel (`npm run build`) or forgot to copy `dist/`.
+- ❌ **Unauthorized on /admin**: No admin user exists. Create with:
+  ```bash
+  npx medusa user -e admin@medusa-test.com -p supersecret
+  ```
 
 ---
 
-## 🔗 GitHub Repo
+## 📬 Feedback
 
-> 🔗 **[Insert Public GitHub Repo Link Here]**  
-> Feel free to fork or star it! Contributions welcome.
-
----
-
-Let me know if you want this zipped or converted to a GitHub repo directly. Want me to build this out with real Terraform modules and ECS Task definitions too?
+PRs and suggestions are welcome!

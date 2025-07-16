@@ -74,19 +74,11 @@ Update your `Dockerfile`:
 ```Dockerfile
 FROM node:20-alpine
 WORKDIR /app
-
 COPY package.json package-lock.json ./
 RUN npm install
-
 COPY . .
-
-# Copy built admin panel if not already included
-COPY src/admin/dist ./src/admin/dist
-
-# Run DB migrations & create admin user before app starts
-CMD npx medusa migrations run && \
-    npx medusa user -e admin@medusa-test.com -p supersecret && \
-    npm run start
+EXPOSE 9000
+CMD ["npm", "run", "dev"]
 ```
 
 ---
@@ -94,68 +86,110 @@ CMD npx medusa migrations run && \
 ### ✅ 4. GitHub Actions Workflow (`.github/workflows/deploy.yml`)
 
 ```yaml
-name: Deploy to ECS
+name: Deploy Medusa Store to AWS ECS
 
 on:
   push:
     branches:
       - main
 
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT_ID: 331190361204
+  ECR_REPOSITORY: medusa-repo
+  ECR_IMAGE_URI: 331190361204.dkr.ecr.ap-south-1.amazonaws.com/medusa-repo:latest
+  ECS_CLUSTER: medusa-cluster
+  ECS_SERVICE: medusa-service
+  TASK_DEFINITION_FAMILY: medusa-task
+  CONTAINER_NAME: medusa
+
 jobs:
   deploy:
-    name: Build and Deploy
     runs-on: ubuntu-latest
 
-    env:
-      AWS_REGION: ap-south-1
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve
-
-      - name: Get Terraform Outputs
-        id: tf
-        working-directory: terraform
+      - name: Log in to Amazon ECR
         run: |
-          echo "RDS_HOST=$(terraform output -raw rds_endpoint)" >> $GITHUB_ENV
-          echo "ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_ENV
-          echo "ECS_SERVICE=$(terraform output -raw ecs_service_name)" >> $GITHUB_ENV
-          echo "TASK_DEF=$(terraform output -raw task_definition_family)" >> $GITHUB_ENV
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
       - name: Build Docker image
         run: |
-          docker build -t medusa-app .
+          docker build -t $ECR_REPOSITORY .
 
-      - name: Login to ECR
+      - name: Tag and Push image to ECR
         run: |
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin <your-ecr-url>
+          docker tag $ECR_REPOSITORY:latest $ECR_IMAGE_URI
+          docker push $ECR_IMAGE_URI
+          echo "IMAGE_URI=$ECR_IMAGE_URI" >> $GITHUB_ENV
 
-      - name: Push Docker image to ECR
+      - name: Update ECS task definition
+        id: update-task-def
         run: |
-          docker tag medusa-app:latest <your-ecr-url>/medusa-app:latest
-          docker push <your-ecr-url>/medusa-app:latest
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --region $AWS_REGION)
 
-      - name: Update ECS Service
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE_URI "$ECR_IMAGE_URI" \
+            --arg CONTAINER_NAME "$CONTAINER_NAME" \
+            '.taskDefinition |
+            .containerDefinitions |= map(if .name == $CONTAINER_NAME then .image = $IMAGE_URI else . end) |
+            del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+
+          NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --region $AWS_REGION \
+            --cli-input-json "$NEW_TASK_DEF" \
+            | jq -r '.taskDefinition.taskDefinitionArn')
+
+          echo "task_definition_arn=$NEW_TASK_DEF_ARN" >> $GITHUB_OUTPUT
+
+      - name: Deploy new ECS task
         run: |
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
             --service $ECS_SERVICE \
-            --force-new-deployment
+            --task-definition ${{ steps.update-task-def.outputs.task_definition_arn }} \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Wait for ECS to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION
+          echo "ECS service is now stable ✅"
+
+      - name: Run Medusa DB Migrations on ECS
+        run: |
+          echo "Running DB migrations on ECS..."
+          aws ecs run-task \
+            --cluster $ECS_CLUSTER \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-0411fc8f2e2f8523b,subnet-0921b8e9af81137cd],securityGroups=[sg-0e64a4a0da97f441e],assignPublicIp=ENABLED}" \
+            --task-definition $TASK_DEFINITION_FAMILY \
+            --region $AWS_REGION \
+            --overrides "$(jq -n \
+              --arg container "$CONTAINER_NAME" \
+              --arg cmd1 "npx" \
+              --arg cmd2 "medusa" \
+              --arg cmd3 "db:migrate" \
+              '{containerOverrides:[{name:$container,command:[$cmd1,$cmd2,$cmd3]}]}')"
+
 ```
 
 ---

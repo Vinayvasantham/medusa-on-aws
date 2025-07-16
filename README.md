@@ -194,6 +194,11 @@ jobs:
 
 ---
 
+### I used testing server over production server using "npm run dev" instead of "npm run start" in dockerfile
+
+## After deploying image to the ECS you can access with the ECS Public IP "http://<PubliIp>:9000/app" 
+
+
 ## ✅ Post-Deployment: Testing
 
 ### 🧪 Test Medusa Admin Token Auth
